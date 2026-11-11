@@ -1213,11 +1213,16 @@ do
         local MousePosition = UserInputService:GetMouseLocation()
         local absPos = Object.AbsolutePosition
         local absSize = Object.AbsoluteSize
+        local sgui = Object:FindFirstAncestorOfClass("ScreenGui")
+        if sgui and not sgui.IgnoreGuiInset then
+            local inset = GuiService:GetGuiInset()
+            MousePosition = Vector2.new(MousePosition.X - inset.X, MousePosition.Y - inset.Y)
+        end
 
-        return MousePosition.X >= absPos.X
-            and MousePosition.X <= absPos.X + absSize.X
-            and MousePosition.Y >= absPos.Y
-            and MousePosition.Y <= absPos.Y + absSize.Y
+        return MousePosition.X >= (absPos.X - 3)
+            and MousePosition.X <= (absPos.X + absSize.X + 3)
+            and MousePosition.Y >= (absPos.Y - 3)
+            and MousePosition.Y <= (absPos.Y + absSize.Y + 3)
     end
 
     function Library:SafeCall(Function, ...)
@@ -4555,6 +4560,7 @@ do
 
         local Parent = Params.Parent or Dropdown.Section.Items["Content"]
         local Items = {}
+        local lastInternalClickAt = 0
 
         Items["Dropdown"] = Library:Create("Frame", {
             Name = "\0",
@@ -4843,8 +4849,22 @@ do
                 Library:SafeCall(Dropdown.Callback, Dropdown.Value)
             end
 
-            OptionData.Button:Connect("MouseButton1Down", function()
+            local lastOptPress = 0
+            local function triggerOptionPress()
+                lastInternalClickAt = os.clock()
+                local now = lastInternalClickAt
+                if now - lastOptPress < 0.08 then
+                    return
+                end
+                lastOptPress = now
                 OptionData:Set()
+            end
+
+            OptionData.Button:Connect("MouseButton1Down", triggerOptionPress)
+            OptionData.Button:Connect("InputBegan", function(Input)
+                if Input.UserInputType == Enum.UserInputType.Touch then
+                    triggerOptionPress()
+                end
             end)
 
             Dropdown.Options[OptionData.Name] = OptionData
@@ -4924,6 +4944,7 @@ do
             Dropdown.IsOpen = Bool
 
             if Bool then
+                Dropdown._lastOpenedAt = os.clock()
                 for _, Frame in pairs(Library.OpenFrames) do
                     if Frame ~= Dropdown and Frame ~= IsSettings and not Params.Parent then
                         Frame:SetOpen(false)
@@ -4960,15 +4981,47 @@ do
             end
         end
 
-        Items["RealDropdown"]:Connect("MouseButton1Down", function()
+        Items["OptionHolder"]:Connect("InputBegan", function(Input)
+            if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+                lastInternalClickAt = os.clock()
+            end
+        end)
+
+        Items["OptionScroll"]:Connect("InputBegan", function(Input)
+            if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+                lastInternalClickAt = os.clock()
+            end
+        end)
+
+        local lastRealDropdownClick = 0
+        local function toggleDropdownOpen()
+            lastInternalClickAt = os.clock()
+            local now = lastInternalClickAt
+            if now - lastRealDropdownClick < 0.10 then
+                return
+            end
+            lastRealDropdownClick = now
             Dropdown:SetOpen(not Dropdown.IsOpen)
+        end
+
+        Items["RealDropdown"]:Connect("MouseButton1Down", toggleDropdownOpen)
+        Items["RealDropdown"]:Connect("InputBegan", function(Input)
+            if Input.UserInputType == Enum.UserInputType.Touch then
+                toggleDropdownOpen()
+            end
         end)
 
         Library:Connect(UserInputService.InputBegan, function(Input)
             if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-                if Dropdown.IsOpen and not Items["OptionHolder"]:IsMouseOverFrame() and not Items["RealDropdown"]:IsMouseOverFrame() then
-                    Dropdown:SetOpen(false)
-                end
+                task.defer(function()
+                    local now = os.clock()
+                    if (now - lastInternalClickAt) < 0.12 or (now - (Dropdown._lastOpenedAt or 0)) < 0.16 then
+                        return
+                    end
+                    if Dropdown.IsOpen and not Items["OptionHolder"]:IsMouseOverFrame() and not Items["RealDropdown"]:IsMouseOverFrame() then
+                        Dropdown:SetOpen(false)
+                    end
+                end)
             end
         end)
 
