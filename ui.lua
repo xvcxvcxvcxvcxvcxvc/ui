@@ -1248,16 +1248,28 @@ do
         return rounded
     end
 
+    local function ensureConfigFolders()
+        if not safeIsFolder(Library.Directory) then
+            safeMakeFolder(Library.Directory)
+        end
+        local cfgDir = Library.Directory .. Library.Folders.Configs
+        if not safeIsFolder(cfgDir) then
+            safeMakeFolder(cfgDir)
+        end
+    end
+
     function Library:GetConfig()
         local Config = {}
         local Success, Result = Library:SafeCall(function()
             for Index, Value in pairs(Library.Flags) do
-                if type(Value) == "table" and Value.Key then
-                    Config[Index] = { Key = tostring(Value.Key), Mode = Value.Mode }
-                elseif type(Value) == "table" and Value.Color then
-                    Config[Index] = { Color = "#" .. Value.HexValue, Alpha = Value.Alpha }
-                else
-                    Config[Index] = Value
+                if Index ~= "configs_dropdown" and Index ~= "config_name" then
+                    if type(Value) == "table" and Value.Key then
+                        Config[Index] = { Key = tostring(Value.Key), Mode = Value.Mode }
+                    elseif type(Value) == "table" and Value.Color then
+                        Config[Index] = { Color = "#" .. Value.HexValue, Alpha = Value.Alpha }
+                    else
+                        Config[Index] = Value
+                    end
                 end
             end
         end)
@@ -1278,25 +1290,35 @@ do
             return false, "invalid json"
         end
 
-        local Success, Result = Library:SafeCall(function()
-            for Index, Value in pairs(Decoded) do
-                local SetFunction = Library.SetFlags[Index]
-                if SetFunction then
-                    if type(Value) == "table" and Value.Key then
-                        SetFunction(Value)
-                    elseif type(Value) == "table" and Value.Color then
-                        SetFunction(Value.Color, Value.Alpha)
-                    else
-                        SetFunction(Value)
-                    end
+        local function applyFlag(Index, Value)
+            local SetFunction = Library.SetFlags[Index]
+            if not SetFunction then return end
+            pcall(function()
+                if type(Value) == "table" and Value.Key then
+                    SetFunction(Value)
+                elseif type(Value) == "table" and Value.Color then
+                    SetFunction(Value.Color, Value.Alpha)
+                else
+                    SetFunction(Value)
                 end
-            end
-        end)
+            end)
+        end
 
-        return Success, Result
+        if Decoded["ui_theme_preset"] ~= nil then
+            applyFlag("ui_theme_preset", Decoded["ui_theme_preset"])
+        end
+
+        for Index, Value in pairs(Decoded) do
+            if Index ~= "configs_dropdown" and Index ~= "config_name" and Index ~= "ui_theme_preset" and Index ~= "__LegitConfigs" then
+                applyFlag(Index, Value)
+            end
+        end
+
+        return true
     end
 
     function Library:GetConfigsList(Element)
+        ensureConfigFolders()
         local List = safeListFiles(Library.Directory .. Library.Folders.Configs)
         local ReturnList = {}
 
@@ -4511,20 +4533,21 @@ do
     function Library:Dropdown(Params)
         Params = Params or {}
 
+        local isMultiDropdown = Params.Multi or Params.multi or false
         local Dropdown = {
             Name = Params.Name or Params.name or "Dropdown",
             OptionItems = Params.Items or Params.items or {},
             Flag = Params.Flag or Params.flag or (Params.Name or Params.name),
             Default = Params.Default or Params.default or "",
             Callback = Params.Callback or Params.callback or function() end,
-            Multi = Params.Multi or Params.multi or false,
+            Multi = isMultiDropdown,
             MaxSize = Params.MaxSize or 150,
 
             Window = self.Window,
             Page = self.Page,
             Section = self,
 
-            Value = {},
+            Value = isMultiDropdown and {} or nil,
             Options = {},
             IsOpen = false,
             Items = {},
@@ -4683,6 +4706,18 @@ do
                 Flags[Dropdown.Flag] = Dropdown.Value
                 updateValueLabel()
             else
+                if Value == nil or Value == "" then
+                    Dropdown.Value = nil
+                    for _, Opt in pairs(Dropdown.Options) do
+                        Opt.IsSelected = false
+                        Opt:ToggleState("Inactive")
+                    end
+                    Flags[Dropdown.Flag] = nil
+                    updateValueLabel()
+                    Library:SafeCall(Dropdown.Callback, nil)
+                    return
+                end
+
                 if not Dropdown.Options[Value] then
                     return
                 end
@@ -4771,8 +4806,6 @@ do
             end
 
             function OptionData:Set()
-                OptionData.IsSelected = not OptionData.IsSelected
-
                 if Dropdown.Multi then
                     if type(Dropdown.Value) ~= "table" then
                         Dropdown.Value = {}
@@ -4790,23 +4823,16 @@ do
                     Flags[Dropdown.Flag] = Dropdown.Value
                     updateValueLabel()
                 else
-                    if OptionData.IsSelected then
-                        Dropdown.Value = OptionData.Name
-                        Flags[Dropdown.Flag] = OptionData.Name
-                        OptionData.IsSelected = true
-                        OptionData:ToggleState("Active")
+                    Dropdown.Value = OptionData.Name
+                    Flags[Dropdown.Flag] = OptionData.Name
+                    OptionData.IsSelected = true
+                    OptionData:ToggleState("Active")
 
-                        for _, Opt in pairs(Dropdown.Options) do
-                            if Opt ~= OptionData then
-                                Opt.IsSelected = false
-                                Opt:ToggleState("Inactive")
-                            end
+                    for _, Opt in pairs(Dropdown.Options) do
+                        if Opt ~= OptionData then
+                            Opt.IsSelected = false
+                            Opt:ToggleState("Inactive")
                         end
-                    else
-                        Dropdown.Value = nil
-                        Flags[Dropdown.Flag] = nil
-                        OptionData.IsSelected = false
-                        OptionData:ToggleState("Inactive")
                     end
                     updateValueLabel()
                     if Dropdown.IsOpen then
@@ -4836,9 +4862,34 @@ do
             for optName in pairs(Dropdown.Options) do
                 Dropdown:Remove(optName)
             end
-            for _, val in ipairs(List) do
+            for _, val in ipairs(List or {}) do
                 Dropdown:Add(val)
             end
+
+            if Dropdown.Multi then
+                if type(Dropdown.Value) ~= "table" then
+                    Dropdown.Value = {}
+                end
+                local kept = {}
+                for _, val in ipairs(Dropdown.Value) do
+                    if Dropdown.Options[val] then
+                        Dropdown.Options[val].IsSelected = true
+                        Dropdown.Options[val]:ToggleState("Active")
+                        table.insert(kept, val)
+                    end
+                end
+                Dropdown.Value = kept
+                Flags[Dropdown.Flag] = Dropdown.Value
+            else
+                if type(Dropdown.Value) == "string" and Dropdown.Options[Dropdown.Value] then
+                    Dropdown.Options[Dropdown.Value].IsSelected = true
+                    Dropdown.Options[Dropdown.Value]:ToggleState("Active")
+                else
+                    Dropdown.Value = nil
+                    Flags[Dropdown.Flag] = nil
+                end
+            end
+            updateValueLabel()
         end
 
         function Dropdown:SetText(Text)
@@ -5259,31 +5310,73 @@ do
         local ConfigSelected = nil
         local ConfigName = ""
 
+        local function sanitizeConfigName(raw)
+            if type(raw) ~= "string" then return "" end
+            local cleaned = raw:gsub("%.json$", ""):match("^%s*(.-)%s*$") or ""
+            cleaned = cleaned:gsub('[\\/:*?"<>|]', "")
+            return cleaned
+        end
+
         local ConfigsDropdown = ConfigsSection:Dropdown({
             Name = "configs",
             Flag = "configs_dropdown",
             Items = {},
             Multi = false,
             Callback = function(Value)
-                ConfigSelected = Value
+                ConfigSelected = (type(Value) == "string" and Value ~= "") and Value or nil
             end,
         })
 
-        ConfigsSection:Textbox({
+        local ConfigTextbox = ConfigsSection:Textbox({
             Flag = "config_name",
             Placeholder = "config name...",
             Callback = function(Value)
-                ConfigName = Value
+                ConfigName = tostring(Value or "")
             end,
         })
+
+        local function resolveConfigTarget(preferTyped)
+            local boxText = ConfigTextbox and ConfigTextbox.Items and ConfigTextbox.Items["Input"] and ConfigTextbox.Items["Input"].Instance and ConfigTextbox.Items["Input"].Instance.Text or ""
+            local typed = sanitizeConfigName(boxText ~= "" and boxText or ConfigName)
+            if preferTyped and typed ~= "" then
+                return typed
+            end
+            if type(ConfigSelected) == "string" and ConfigSelected ~= "" then
+                return ConfigSelected
+            end
+            return typed
+        end
+
+        local function refreshConfigsList(preferredSelection)
+            local list = Library:GetConfigsList(ConfigsDropdown)
+            local pick = preferredSelection
+            if (not pick or pick == "") and type(ConfigSelected) == "string" and table.find(list, ConfigSelected) then
+                pick = ConfigSelected
+            end
+            if pick and table.find(list, pick) then
+                ConfigsDropdown:Set(pick)
+            elseif #list == 0 then
+                ConfigsDropdown:Set(nil)
+            end
+            return list
+        end
 
         ConfigsSection:Button({
             Name = "create",
             Callback = function()
-                if ConfigName and ConfigName ~= "" then
-                    safeWriteFile(ConfigsFolder .. ConfigName .. ".json", Library:GetConfig())
-                    Library:GetConfigsList(ConfigsDropdown)
-                    Library:Notification({ Name = "created config: " .. ConfigName, Time = 3 })
+                ensureConfigFolders()
+                local targetName = resolveConfigTarget(true)
+                if targetName == "" then
+                    Library:Notification({ Name = "enter a config name", Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
+                end
+                local ok, err = safeWriteFile(ConfigsFolder .. targetName .. ".json", Library:GetConfig())
+                if ok then
+                    if ConfigTextbox then ConfigTextbox:Set("") end
+                    refreshConfigsList(targetName)
+                    Library:Notification({ Name = "created config: " .. targetName, Time = 3 })
+                else
+                    Library:Notification({ Name = "failed to create config: " .. tostring(err), Color = Color3.fromRGB(255, 70, 70), Time = 3 })
                 end
             end,
         })
@@ -5291,13 +5384,19 @@ do
         ConfigsSection:Button({
             Name = "save",
             Callback = function()
-                if ConfigSelected and safeIsFile(ConfigsFolder .. ConfigSelected .. ".json") then
-                    local ok, err = safeWriteFile(ConfigsFolder .. ConfigSelected .. ".json", Library:GetConfig())
-                    if ok then
-                        Library:Notification({ Name = "saved config: " .. ConfigSelected, Time = 3 })
-                    else
-                        Library:Notification({ Name = "failed to save config: " .. tostring(err), Time = 3 })
-                    end
+                ensureConfigFolders()
+                local targetName = resolveConfigTarget(true)
+                if targetName == "" then
+                    Library:Notification({ Name = "select or enter a config to save", Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
+                end
+                local ok, err = safeWriteFile(ConfigsFolder .. targetName .. ".json", Library:GetConfig())
+                if ok then
+                    if ConfigTextbox then ConfigTextbox:Set("") end
+                    refreshConfigsList(targetName)
+                    Library:Notification({ Name = "saved config: " .. targetName, Time = 3 })
+                else
+                    Library:Notification({ Name = "failed to save config: " .. tostring(err), Color = Color3.fromRGB(255, 70, 70), Time = 3 })
                 end
             end,
         })
@@ -5305,16 +5404,27 @@ do
         ConfigsSection:Button({
             Name = "load",
             Callback = function()
-                if ConfigSelected and safeIsFile(ConfigsFolder .. ConfigSelected .. ".json") then
-                    local content = safeReadFile(ConfigsFolder .. ConfigSelected .. ".json")
-                    if content then
-                        local ok, err = Library:LoadConfig(content)
-                        if ok then
-                            Library:Notification({ Name = "loaded config: " .. ConfigSelected, Time = 3 })
-                        else
-                            Library:Notification({ Name = "failed to load config: " .. tostring(err), Time = 3 })
-                        end
-                    end
+                local targetName = resolveConfigTarget(false)
+                if targetName == "" then
+                    Library:Notification({ Name = "select a config to load", Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
+                end
+                local path = ConfigsFolder .. targetName .. ".json"
+                if not safeIsFile(path) then
+                    Library:Notification({ Name = "config not found: " .. targetName, Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
+                end
+                local content = safeReadFile(path)
+                if not content then
+                    Library:Notification({ Name = "failed to read config: " .. targetName, Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
+                end
+                local ok, err = Library:LoadConfig(content)
+                if ok then
+                    ConfigsDropdown:Set(targetName)
+                    Library:Notification({ Name = "loaded config: " .. targetName, Time = 3 })
+                else
+                    Library:Notification({ Name = "failed to load config: " .. tostring(err), Color = Color3.fromRGB(255, 70, 70), Time = 3 })
                 end
             end,
         })
@@ -5322,34 +5432,53 @@ do
         ConfigsSection:Button({
             Name = "delete",
             Callback = function()
-                if ConfigSelected and safeIsFile(ConfigsFolder .. ConfigSelected .. ".json") then
-                    local deleted = ConfigSelected
-                    safeDelFile(ConfigsFolder .. deleted .. ".json")
-                    ConfigSelected = nil
-                    Library:GetConfigsList(ConfigsDropdown)
-                    Library:Notification({ Name = "deleted config: " .. deleted, Time = 3 })
+                local targetName = resolveConfigTarget(false)
+                if targetName == "" or not safeIsFile(ConfigsFolder .. targetName .. ".json") then
+                    Library:Notification({ Name = "select a valid config to delete", Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
                 end
+                safeDelFile(ConfigsFolder .. targetName .. ".json")
+                if ConfigSelected == targetName then
+                    ConfigSelected = nil
+                end
+                local list = refreshConfigsList(nil)
+                if #list > 0 then
+                    ConfigsDropdown:Set(list[1])
+                else
+                    ConfigsDropdown:Set(nil)
+                end
+                Library:Notification({ Name = "deleted config: " .. targetName, Time = 3 })
             end,
         })
 
         ConfigsSection:Button({
             Name = "set autoload",
             Callback = function()
-                if ConfigSelected and safeIsFile(ConfigsFolder .. ConfigSelected .. ".json") then
-                    safeWriteFile(AutoloadFile, ConfigSelected)
-                    Library:Notification({ Name = "autoload set: " .. ConfigSelected, Time = 3 })
+                ensureConfigFolders()
+                local targetName = resolveConfigTarget(false)
+                if targetName == "" or not safeIsFile(ConfigsFolder .. targetName .. ".json") then
+                    Library:Notification({ Name = "select a valid config for autoload", Color = Color3.fromRGB(255, 70, 70), Time = 3 })
+                    return
                 end
+                safeWriteFile(AutoloadFile, targetName)
+                Library:Notification({ Name = "autoload set: " .. targetName, Time = 3 })
             end,
         })
 
         ConfigsSection:Button({
             Name = "refresh",
             Callback = function()
-                Library:GetConfigsList(ConfigsDropdown)
+                refreshConfigsList(ConfigSelected)
             end,
         })
 
-        Library:GetConfigsList(ConfigsDropdown)
+        local initialConfigs = refreshConfigsList(nil)
+        local autoPick = safeIsFile(AutoloadFile) and sanitizeConfigName(safeReadFile(AutoloadFile)) or ""
+        if autoPick ~= "" and table.find(initialConfigs, autoPick) then
+            ConfigsDropdown:Set(autoPick)
+        elseif #initialConfigs > 0 then
+            ConfigsDropdown:Set(initialConfigs[1])
+        end
 
         local ThemingSection = SettingsPage:Section({ Name = "theming", Side = 1 })
         local presetNames = {}
